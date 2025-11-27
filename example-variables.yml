@@ -1,0 +1,40 @@
+---
+- key: DATABASE_URL
+  value: postgresql://user:pass@localhost:5432/mydb
+  variable_type: env_var
+  protected: true
+  masked: true
+  hidden: false
+  raw: false
+  environment_scope: production
+  description: Production database connection string
+- key: API_KEY
+  value: sk_live_xxxxxxxxxxxxxxxx
+  variable_type: env_var
+  protected: true
+  masked: true
+  hidden: false
+  raw: true
+  environment_scope: '*'
+  description: Third-party API key
+- key: SSL_CERTIFICATE
+  value: |
+    -----BEGIN CERTIFICATE-----
+    MIIDXTCCAkWgAwIBAgIJAKJ...
+    -----END CERTIFICATE-----
+  variable_type: file
+  protected: false
+  masked: false
+  hidden: false
+  raw: true
+  environment_scope: '*'
+  description: SSL certificate file
+- key: DEBUG_MODE
+  value: 'false'
+  variable_type: env_var
+  protected: false
+  masked: false
+  hidden: false
+  raw: false
+  environment_scope: staging
+  description: Enable debug logging in staging

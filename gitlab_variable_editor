@@ -1,0 +1,176 @@
+#!/usr/bin/env ruby
+
+require 'gitlab'
+require 'yaml'
+require 'thor'
+
+class GitLabVariableEditor < Thor
+  class_option :endpoint, type: :string, required: true, aliases: '-e', desc: 'GitLab API endpoint (e.g., https://gitlab.example.com/api/v4)'
+  class_option :token, type: :string, required: true, aliases: '-t', desc: 'GitLab access token'
+  class_option :project, type: :string, required: true, aliases: '-p', desc: 'Project ID or path (e.g., my-group/my-project)'
+
+  desc 'export OUTPUT_FILE', 'Export all CI/CD variables from a GitLab project to a YAML file'
+  def export(output_file)
+    configure_client
+
+    puts "Fetching CI/CD variables from project: #{options[:project]}"
+
+    begin
+      variables = @client.variables(options[:project])
+
+      if variables.empty?
+        puts "No variables found for project #{options[:project]}"
+        return
+      end
+
+      # Convert to hash format suitable for YAML
+      variables_data = variables.map do |var|
+        {
+          'key' => var.key,
+          'value' => var.value,
+          'variable_type' => var.variable_type,
+          'protected' => var.protected,
+          'masked' => var.masked,
+          'hidden' => var.respond_to?(:hidden) ? var.hidden : false,
+          'raw' => var.respond_to?(:raw) ? var.raw : false,
+          'environment_scope' => var.environment_scope,
+          'description' => var.respond_to?(:description) ? var.description : nil
+        }
+      end
+
+      # Save to YAML file
+      File.write(output_file, YAML.dump(variables_data))
+
+      puts "Successfully exported #{variables.count} variable(s) to #{output_file}"
+
+    rescue Gitlab::Error::Error => e
+      puts "Error: #{e.message}"
+      exit 1
+    end
+  end
+
+  desc 'import INPUT_FILE', 'Import CI/CD variables from a YAML file to a GitLab project'
+  option :force, type: :boolean, default: false, aliases: '-f', desc: 'Skip confirmation prompts'
+  def import(input_file)
+    configure_client
+
+    unless File.exist?(input_file)
+      puts "Error: File '#{input_file}' not found"
+      exit 1
+    end
+
+    puts "Loading variables from #{input_file}"
+
+    begin
+      variables_data = YAML.load_file(input_file)
+
+      unless variables_data.is_a?(Array)
+        puts "Error: Invalid YAML format. Expected an array of variables."
+        exit 1
+      end
+
+      # Fetch existing variables
+      puts "Fetching existing variables from project: #{options[:project]}"
+      existing_variables = @client.variables(options[:project])
+      existing_keys = existing_variables.map(&:key)
+
+      # Separate new and existing variables
+      new_vars = []
+      update_vars = []
+
+      variables_data.each do |var|
+        if existing_keys.include?(var['key'])
+          update_vars << var
+        else
+          new_vars << var
+        end
+      end
+
+      # Show summary
+      puts "\nSummary:"
+      puts "  New variables to create: #{new_vars.count}"
+      puts "  Existing variables to update: #{update_vars.count}"
+      puts "  Total variables to process: #{variables_data.count}"
+
+      if update_vars.any? && !options[:force]
+        puts "\nThe following variables will be OVERWRITTEN:"
+        update_vars.each { |v| puts "  - #{v['key']}" }
+
+        print "\nDo you want to continue? (yes/no): "
+        response = STDIN.gets.chomp.downcase
+
+        unless ['yes', 'y'].include?(response)
+          puts "Import cancelled."
+          exit 0
+        end
+      end
+
+      # Import variables
+      puts "\nImporting variables..."
+      created_count = 0
+      updated_count = 0
+      error_count = 0
+
+      variables_data.each do |var|
+        begin
+          # Prepare options
+          var_options = {
+            variable_type: var['variable_type'] || 'env_var',
+            protected: var['protected'] || false,
+            masked: var['masked'] || false,
+            raw: var.key?('raw') ? var['raw'] : false,
+            environment_scope: var['environment_scope'] || '*'
+          }
+
+          # Add description if present
+          var_options[:description] = var['description'] if var['description']
+
+          # Add hidden if present (GitLab 17.4+)
+          var_options[:hidden] = var['hidden'] if var.key?('hidden')
+
+          if existing_keys.include?(var['key'])
+            # Update existing variable
+            @client.update_variable(options[:project], var['key'], var['value'], var_options)
+            puts "  ✓ Updated: #{var['key']}"
+            updated_count += 1
+          else
+            # Create new variable
+            @client.create_variable(options[:project], var['key'], var['value'], var_options)
+            puts "  ✓ Created: #{var['key']}"
+            created_count += 1
+          end
+
+        rescue Gitlab::Error::Error => e
+          puts "  ✗ Failed: #{var['key']} - #{e.message}"
+          error_count += 1
+        end
+      end
+
+      puts "\nImport completed:"
+      puts "  Created: #{created_count}"
+      puts "  Updated: #{updated_count}"
+      puts "  Failed: #{error_count}"
+
+    rescue Psych::SyntaxError => e
+      puts "Error: Invalid YAML syntax - #{e.message}"
+      exit 1
+    rescue Gitlab::Error::Error => e
+      puts "Error: #{e.message}"
+      exit 1
+    end
+  end
+
+  private
+
+  def configure_client
+    @client = Gitlab.client(
+      endpoint: options[:endpoint],
+      private_token: options[:token]
+    )
+  rescue => e
+    puts "Error configuring GitLab client: #{e.message}"
+    exit 1
+  end
+end
+
+GitLabVariableEditor.start(ARGV)
