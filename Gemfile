@@ -1,4 +1,4 @@
 source 'https://rubygems.org'
 
-gem 'gitlab', '~> 4.19'
-gem 'thor', '~> 1.3'
+gem 'gitlab', '~> 6.0.0'
+gem 'thor'

@@ -130,12 +130,12 @@ class GitLabVariableEditor < Thor
 
           if existing_keys.include?(var['key'])
             # Update existing variable
-            @client.update_variable(options[:project], var['key'], var['value'], var_options)
+            @client.update_variable(options[:project], var['key'], var['value'], **var_options)
             puts "  ✓ Updated: #{var['key']}"
             updated_count += 1
           else
             # Create new variable
-            @client.create_variable(options[:project], var['key'], var['value'], var_options)
+            @client.create_variable(options[:project], var['key'], var['value'], **var_options)
             puts "  ✓ Created: #{var['key']}"
             created_count += 1
           end
