@@ -1,12 +1,13 @@
 # GitLab Variable Editor
 
-A command-line tool for exporting and importing CI/CD variables from GitLab projects.
+A command-line toolkit for managing GitLab projects: export/import CI/CD variables and remove job artifacts.
 
 ## Features
 
-- **Export**: Download all CI/CD variables from a GitLab project to a YAML file
-- **Import**: Upload CI/CD variables from a YAML file to a GitLab project
-- **Safety**: Prompts for confirmation before overwriting existing variables
+- **Variable Export**: Download all CI/CD variables from a GitLab project to a YAML file
+- **Variable Import**: Upload CI/CD variables from a YAML file to a GitLab project
+- **Artifact Removal**: Delete job artifacts by age (e.g., older than 3 days)
+- **Safety**: Prompts for confirmation before destructive operations
 - **Complete**: Preserves all variable attributes (type, masked, protected, environment scope, etc.)
 
 ## Installation
@@ -65,6 +66,39 @@ Import CI/CD variables from a YAML file to a project:
   --force
 ```
 
+### Remove Job Artifacts
+
+Remove job artifacts older than a specified duration:
+
+```bash
+./gitlab_artifact_remover remove \
+  --endpoint https://gitlab.example.com/api/v4 \
+  --token YOUR_ACCESS_TOKEN \
+  --project my-group/my-project \
+  --older-than 3d
+```
+
+**Example:**
+```bash
+./gitlab_artifact_remover remove \
+  -e https://gitlab.example.com/api/v4 \
+  -t glpat-xxxxxxxxxxxxxxxxxxxx \
+  -p my-group/my-project \
+  --older-than 3d
+```
+
+**Supported duration formats:** `3d` (days), `1w` (weeks), `24h` (hours), `30m` (minutes).
+
+**Skip confirmation prompt with `--force`:**
+```bash
+./gitlab_artifact_remover remove \
+  -e https://gitlab.example.com/api/v4 \
+  -t glpat-xxxxxxxxxxxxxxxxxxxx \
+  -p my-group/my-project \
+  --older-than 3d \
+  --force
+```
+
 ## Options
 
 ### Global Options (Required for all commands)
@@ -76,6 +110,11 @@ Import CI/CD variables from a YAML file to a project:
 ### Import-Specific Options
 
 - `-f, --force` - Skip confirmation prompts when overwriting variables
+
+### Artifact Remover-Specific Options
+
+- `-o, --older-than` - Only remove artifacts older than this duration (e.g., `3d`, `1w`, `24h`, `30m`). Without this flag, **all** artifacts are targeted.
+- `-f, --force` - Skip confirmation prompt before deleting artifacts
 
 ## YAML Format
 
@@ -109,7 +148,7 @@ The exported YAML file contains an array of variables with the following structu
 
 Your GitLab access token needs the following scopes:
 
-- `api` - Full API access (required for reading and writing CI/CD variables)
+- `api` - Full API access (required for reading and writing CI/CD variables, and for deleting job artifacts)
 
 To create a personal access token:
 1. Go to GitLab → User Settings → Access Tokens
@@ -157,6 +196,24 @@ vim vars.yml
 ./gitlab_variable_editor import vars.yml -e ... -t ... -p ...
 ```
 
+### Clean up old job artifacts
+
+```bash
+# Remove artifacts older than 3 days (requires confirmation)
+./gitlab_artifact_remover remove \
+  -e https://gitlab.example.com/api/v4 \
+  -t glpat-xxxxxxxxxxxxxxxxxxxx \
+  -p my-org/production-app \
+  --older-than 3d
+
+# Remove all artifacts without confirmation (use with caution)
+./gitlab_artifact_remover remove \
+  -e https://gitlab.example.com/api/v4 \
+  -t glpat-xxxxxxxxxxxxxxxxxxxx \
+  -p my-org/production-app \
+  --force
+```
+
 ## Error Handling
 
 The tool provides clear error messages for common issues:
@@ -165,6 +222,11 @@ The tool provides clear error messages for common issues:
 - Project not found or insufficient permissions
 - Invalid YAML format
 - API errors (duplicate keys, invalid values, etc.)
+
+## Acknowledgments
+
+The artifact removal feature was inspired by the bash script written by [Chris Arceneaux](https://github.com/carceneaux):
+- Gist: https://gist.github.com/carceneaux/b75d483e3e0cb798ae60c424300d5a0b
 
 ## License
 

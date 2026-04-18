@@ -4,22 +4,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Ruby CLI tool for managing GitLab CI/CD variables. It allows exporting variables from a GitLab project to YAML files and importing them back, with user confirmation for overwrites.
+This is a Ruby CLI toolkit for managing GitLab projects. It includes tools for exporting/importing CI/CD variables and removing job artifacts.
 
 ## Architecture
 
-**Single-file CLI**: `gitlab_variable_editor` is the entire application, built using Thor for command-line argument parsing.
+**Single-file CLIs**: Both `gitlab_variable_editor` and `gitlab_artifact_remover` are standalone Thor-based scripts.
 
 **Key dependencies**:
 - `gitlab` gem (v4.19+) - GitLab API client
 - `thor` gem (v1.3+) - CLI framework
-- Standard library: `yaml` for file operations
+- Standard library: `yaml`, `time`, `uri`
 
-**Core flow**:
+**Core flow (Variable Editor)**:
 1. `GitLabVariableEditor` class inherits from `Thor`
 2. Global options (`--endpoint`, `--token`, `--project`) are defined as class options
 3. Two commands: `export` and `import`
 4. Private method `configure_client` initializes the Gitlab client with user credentials
+
+**Core flow (Artifact Remover)**:
+1. `GitLabArtifactRemover` class inherits from `Thor`
+2. Same global options as the variable editor
+3. One command: `remove` with `--older-than` and `--force` options
+4. Uses `auto_paginate` to iterate through all jobs
+5. Filters jobs by checking `artifacts` array for `file_type == 'archive'`
+6. Deletes artifacts via raw `client.delete` API call to `/projects/:id/jobs/:job_id/artifacts`
 
 ## Command Usage
 
@@ -49,11 +57,27 @@ bundle install
 ./gitlab_variable_editor import input.yml -e ... -t ... -p ... --force
 ```
 
+**Remove artifacts older than 3 days**:
+```bash
+./gitlab_artifact_remover remove \
+  -e https://gitlab.example.com/api/v4 \
+  -t glpat-xxxxxxxxxxxxxxxxxxxx \
+  -p my-group/my-project \
+  --older-than 3d
+```
+
+**Force artifact removal** (skip confirmation):
+```bash
+./gitlab_artifact_remover remove -e ... -t ... -p ... --older-than 3d --force
+```
+
 **Test commands**:
 ```bash
 ./gitlab_variable_editor help
 ./gitlab_variable_editor help export
 ./gitlab_variable_editor help import
+./gitlab_artifact_remover help
+./gitlab_artifact_remover help remove
 ```
 
 ## YAML Variable Structure
@@ -79,6 +103,11 @@ See `example-variables.yml` for a complete example.
 - `@client.variables(project_id)` - List all variables
 - `@client.create_variable(project_id, key, value, options)` - Create variable
 - `@client.update_variable(project_id, key, value, options)` - Update variable
+- `@client.jobs(project_id, options)` - List jobs (with pagination)
+- `@client.delete(path)` - Raw DELETE request (used for artifact removal)
+
+**Artifact removal API endpoint**:
+- `DELETE /projects/:id/jobs/:job_id/artifacts` - Delete artifacts for a specific job
 
 **Error handling**: All GitLab API calls are wrapped in `begin/rescue` blocks catching `Gitlab::Error::Error`.
 
@@ -86,5 +115,6 @@ See `example-variables.yml` for a complete example.
 
 - **Thor argument order**: Commands must come before options. Wrong: `./tool -e X export file`. Right: `./tool export file -e X`.
 - **Sensitive data**: Exported YAML files contain secrets. The `.gitignore` excludes `*.yml` and `*.yaml` except `example-variables.yml`.
-- **Token requirements**: GitLab personal access token needs `api` scope for full variable management.
-- **User confirmation**: Import shows a diff summary and requires user input (`yes`/`y`) before overwriting, unless `--force` is used.
+- **Token requirements**: GitLab personal access token needs `api` scope for full variable management and artifact removal.
+- **User confirmation**: Import and artifact removal show a summary and require user input (`yes`/`y`) before proceeding, unless `--force` is used.
+- **Artifact filtering**: The artifact remover checks for `file_type == 'archive'` in the job's `artifacts` array to distinguish real artifacts from job traces (logs).

@@ -1,0 +1,136 @@
+#!/usr/bin/env ruby
+
+# Inspired by the bash script by Chris Arceneaux
+# https://gist.github.com/carceneaux/b75d483e3e0cb798ae60c424300d5a0b
+
+require 'gitlab'
+require 'thor'
+require 'time'
+require 'uri'
+
+class GitLabArtifactRemover < Thor
+  class_option :endpoint, type: :string, required: true, aliases: '-e', desc: 'GitLab API endpoint (e.g., https://gitlab.example.com/api/v4)'
+  class_option :token, type: :string, required: true, aliases: '-t', desc: 'GitLab access token'
+  class_option :project, type: :string, required: true, aliases: '-p', desc: 'Project ID or path (e.g., my-group/my-project)'
+
+  desc 'remove', 'Remove job artifacts from a GitLab project'
+  option :older_than, type: :string, aliases: ['-o', '--older-then'], desc: 'Only remove artifacts older than this duration (e.g., 3d, 1w, 24h). Without this flag, all artifacts are targeted.'
+  option :force, type: :boolean, default: false, aliases: '-f', desc: 'Skip confirmation prompt'
+  def remove
+    configure_client
+
+    cutoff_time = nil
+    if options[:older_than]
+      cutoff_time = parse_duration(options[:older_than])
+      unless cutoff_time
+        puts "Error: Invalid --older-than format. Use formats like 3d, 1w, 24h, 30m."
+        exit 1
+      end
+      puts "Removing artifacts older than #{options[:older_than]} (before #{cutoff_time.iso8601})"
+    end
+
+    puts "Fetching jobs from project: #{options[:project]}"
+
+    all_jobs = []
+    @client.jobs(options[:project], per_page: 100).auto_paginate do |job|
+      all_jobs << job
+    end
+
+    puts "Total jobs found: #{all_jobs.count}"
+
+    jobs_with_artifacts = all_jobs.select do |job|
+      has_real_artifacts = job.artifacts.any? { |artifact| artifact.file_type == 'archive' }
+      next false unless has_real_artifacts
+
+      if cutoff_time
+        job_time = parse_time(job.finished_at) || parse_time(job.created_at)
+        next false unless job_time
+        job_time < cutoff_time
+      else
+        true
+      end
+    end
+
+    if jobs_with_artifacts.empty?
+      puts "No jobs with artifacts found matching criteria."
+      return
+    end
+
+    puts "\n#{jobs_with_artifacts.count} job(s) with artifacts found:"
+    jobs_with_artifacts.each do |job|
+      time_str = job.finished_at || job.created_at
+      puts "  - Job #{job.id} (#{job.name}, ref: #{job.ref}) – #{time_str}"
+    end
+
+    unless options[:force]
+      print "\nDo you want to delete artifacts for these jobs? (yes/no): "
+      response = STDIN.gets.chomp.downcase
+
+      unless %w[yes y].include?(response)
+        puts "Operation cancelled."
+        exit 0
+      end
+    end
+
+    puts "\nDeleting artifacts..."
+    deleted_count = 0
+    failed_count = 0
+
+    encoded_project = URI.encode_www_form_component(options[:project].to_s)
+
+    jobs_with_artifacts.each do |job|
+      begin
+        @client.delete("/projects/#{encoded_project}/jobs/#{job.id}/artifacts")
+        puts "  ✓ Deleted artifacts for Job #{job.id} (#{job.name})"
+        deleted_count += 1
+      rescue Gitlab::Error::Error => e
+        puts "  ✗ Failed to delete artifacts for Job #{job.id} (#{job.name}): #{e.message}"
+        failed_count += 1
+      end
+    end
+
+    puts "\nDone. Deleted: #{deleted_count}, Failed: #{failed_count}"
+
+  rescue Gitlab::Error::Error => e
+    puts "Error: #{e.message}"
+    exit 1
+  end
+
+  private
+
+  def configure_client
+    @client = Gitlab.client(
+      endpoint: options[:endpoint],
+      private_token: options[:token]
+    )
+  rescue => e
+    puts "Error configuring GitLab client: #{e.message}"
+    exit 1
+  end
+
+  def parse_duration(str)
+    return nil unless str =~ /^(\d+)([dhwm])$/i
+
+    num = $1.to_i
+    unit = $2.downcase
+    now = Time.now
+
+    case unit
+    when 'd' then now - (num * 24 * 60 * 60)
+    when 'h' then now - (num * 60 * 60)
+    when 'w' then now - (num * 7 * 24 * 60 * 60)
+    when 'm' then now - (num * 60)
+    else nil
+    end
+  end
+
+  def parse_time(str)
+    return nil if str.nil? || str.to_s.empty?
+
+    Time.parse(str.to_s)
+  rescue ArgumentError
+    nil
+  end
+end
+
+GitLabArtifactRemover.start(ARGV)
