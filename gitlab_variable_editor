@@ -51,6 +51,7 @@ class GitLabVariableEditor < Thor
 
   desc 'import INPUT_FILE', 'Import CI/CD variables from a YAML file to a GitLab project'
   option :force, type: :boolean, default: false, aliases: '-f', desc: 'Skip confirmation prompts'
+  option :'delete-other', type: :boolean, default: false, desc: 'Delete variables that exist in GitLab but not in the import file'
   def import(input_file)
     configure_client
 
@@ -92,9 +93,30 @@ class GitLabVariableEditor < Thor
       puts "  Existing variables to update: #{update_vars.count}"
       puts "  Total variables to process: #{variables_data.count}"
 
+      # Compute variables to delete
+      import_keys = variables_data.map { |v| v['key'] }
+      delete_vars = existing_variables.reject { |ev| import_keys.include?(ev.key) }
+
+      if delete_vars.any?
+        puts "  Variables to delete: #{delete_vars.count}"
+      end
+
       if update_vars.any? && !options[:force]
         puts "\nThe following variables will be OVERWRITTEN:"
         update_vars.each { |v| puts "  - #{v['key']}" }
+
+        print "\nDo you want to continue? (yes/no): "
+        response = STDIN.gets.chomp.downcase
+
+        unless ['yes', 'y'].include?(response)
+          puts "Import cancelled."
+          exit 0
+        end
+      end
+
+      if delete_vars.any? && options[:'delete-other'] && !options[:force]
+        puts "\nThe following variables will be DELETED:"
+        delete_vars.each { |v| puts "  - #{v.key}" }
 
         print "\nDo you want to continue? (yes/no): "
         response = STDIN.gets.chomp.downcase
@@ -146,9 +168,25 @@ class GitLabVariableEditor < Thor
         end
       end
 
+      # Delete variables that exist in GitLab but not in the import file
+      deleted_count = 0
+      if delete_vars.any? && options[:'delete-other']
+        puts "\nDeleting variables..."
+        delete_vars.each do |var|
+          begin
+            @client.delete_variable(options[:project], var.key)
+            puts "  ✓ Deleted: #{var.key}"
+            deleted_count += 1
+          rescue Gitlab::Error::Error => e
+            puts "  ✗ Failed to delete: #{var.key} - #{e.message}"
+          end
+        end
+      end
+
       puts "\nImport completed:"
       puts "  Created: #{created_count}"
       puts "  Updated: #{updated_count}"
+      puts "  Deleted: #{deleted_count}"
       puts "  Failed: #{error_count}"
 
     rescue Psych::SyntaxError => e
@@ -173,4 +211,6 @@ class GitLabVariableEditor < Thor
   end
 end
 
-GitLabVariableEditor.start(ARGV)
+if __FILE__ == $0
+  GitLabVariableEditor.start(ARGV)
+end
