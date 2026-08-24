@@ -17,9 +17,16 @@ This is a Ruby CLI toolkit for managing GitLab projects. It includes tools for e
 
 **Core flow (Variable Editor)**:
 1. `GitLabVariableEditor` class inherits from `Thor`
-2. Global options (`--endpoint`, `--token`, `--project`) are defined as class options
-3. Two commands: `export` and `import`
+2. Global options (`--endpoint`, `--token`, `--project`) are defined as class options; `--project` is required only for `export`/`import` (`require_project!`)
+3. Three commands: `export`, `import`, and `batch-update`
 4. Private method `configure_client` initializes the Gitlab client with user credentials
+
+**Core flow (batch-update)**:
+1. `batch_update(key, value = nil)` - when VALUE is omitted/empty, reads it from stdin (whole stream, one trailing newline stripped); confirmation then prompts on `/dev/tty` via `confirm_batch_update?`
+2. Scans all projects from `client.projects(per_page: 100).auto_paginate`; per-project variable fetch failures are skipped with a warning
+3. Matches variables by key + variable_type + environment_scope; updates via `update_variable(..., filter: { environment_scope: scope })`, creates via `create_variable` when `--set-missing`
+4. With scope `*`, other-scope variables of same key/type are deleted via `remove_variable(..., filter: { environment_scope: s })` after a prominent warning
+5. Scan phase rescues `Gitlab::Error::Error, SocketError, SystemCallError`; summary printed before yes/no confirmation
 
 **Core flow (Artifact Remover)**:
 1. `GitLabArtifactRemover` class inherits from `Thor`
@@ -56,6 +63,15 @@ bundle install
 ```bash
 ./gitlab_variable_editor import input.yml -e ... -t ... -p ... --force
 ```
+
+**Batch update one variable across all projects** (VALUE read from stdin when omitted):
+```bash
+./gitlab_variable_editor batch-update SSH_KEY \
+  -e https://gitlab.example.com/api/v4 \
+  -t glpat-xxxxxxxxxxxxxxxxxxxx \
+  --type env_var --scope '*' --set-missing --force < new-key.txt
+```
+Options: `--type env_var|file`, `-s/--scope` (default `*`; with `*` other-scope vars of same key/type are DELETED after warning), `-m/--set-missing` (create where absent), `-f/--force`.
 
 **Remove artifacts older than 3 days**:
 ```bash

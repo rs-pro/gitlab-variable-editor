@@ -6,6 +6,7 @@ A command-line toolkit for managing GitLab projects: export/import CI/CD variabl
 
 - **Variable Export**: Download all CI/CD variables from a GitLab project to a YAML file
 - **Variable Import**: Upload CI/CD variables from a YAML file to a GitLab project
+- **Batch Update**: Set/update one variable across all projects visible to the token (e.g., rotate an SSH key)
 - **Artifact Removal**: Delete job artifacts by age (e.g., older than 3 days)
 - **Safety**: Prompts for confirmation before destructive operations
 - **Complete**: Preserves all variable attributes (type, masked, protected, environment scope, etc.)
@@ -65,6 +66,38 @@ Import CI/CD variables from a YAML file to a project:
   -p my-group/my-project \
   --force
 ```
+
+### Batch Update a Variable Across All Projects
+
+Set or update one variable on every project the token can access:
+
+```bash
+./gitlab_variable_editor batch-update KEY VALUE \
+  --endpoint https://gitlab.example.com/api/v4 \
+  --token YOUR_ACCESS_TOKEN
+```
+
+**Example — rotate an SSH deploy key (value piped via stdin):**
+
+```bash
+./gitlab_variable_editor batch-update DEPLOY_KEY \
+  -e https://gitlab.example.com/api/v4 \
+  -t glpat-xxxxxxxxxxxxxxxxxxxx \
+  -m --force < ~/.ssh/id_ed25519
+
+# or: cat id_ed25519 | ./gitlab_variable_editor batch-update DEPLOY_KEY -e ... -t ... -m -f
+```
+
+When `VALUE` is omitted or empty, it is read from stdin (whole stream = value; one trailing newline is dropped). Because stdin is then consumed, any confirmation prompt is asked on the terminal (`/dev/tty`); if no terminal is available, re-run with `--force`.
+
+**Options:**
+
+- `--type env_var|file` - Variable kind (default: `env_var`). Matching is done by key **and** kind.
+- `-s, --scope SCOPE` - Environment scope to target (default: `*`). When targeting `*`, variables with the same key and type in **other** scopes are **deleted**, so the new value is not shadowed. A warning lists every deletion before you confirm.
+- `-m, --set-missing` - Also create the variable in projects where it does not exist (default: only update existing ones).
+- `-f, --force` - Skip confirmation prompts.
+
+The tool scans all projects returned by `GET /projects` for your token, shows a summary (updates / creations / skips / deletions), and asks for confirmation before writing anything. Instance-wide coverage requires an administrator token; non-admin tokens affect only their visible/member projects.
 
 ### Remove Job Artifacts
 

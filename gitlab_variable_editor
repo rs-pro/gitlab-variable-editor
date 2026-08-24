@@ -4,13 +4,17 @@ require 'gitlab'
 require 'yaml'
 require 'thor'
 
+$stdout.sync = true
+
 class GitLabVariableEditor < Thor
   class_option :endpoint, type: :string, required: true, aliases: '-e', desc: 'GitLab API endpoint (e.g., https://gitlab.example.com/api/v4)'
   class_option :token, type: :string, required: true, aliases: '-t', desc: 'GitLab access token'
-  class_option :project, type: :string, required: true, aliases: '-p', desc: 'Project ID or path (e.g., my-group/my-project)'
+  class_option :project, type: :string, aliases: '-p', desc: 'Project ID or path (required for export/import, e.g., my-group/my-project)'
 
   desc 'export OUTPUT_FILE', 'Export all CI/CD variables from a GitLab project to a YAML file'
   def export(output_file)
+    require_project!
+
     configure_client
 
     puts "Fetching CI/CD variables from project: #{options[:project]}"
@@ -53,6 +57,8 @@ class GitLabVariableEditor < Thor
   option :force, type: :boolean, default: false, aliases: '-f', desc: 'Skip confirmation prompts'
   option :'delete-other', type: :boolean, default: false, desc: 'Delete variables that exist in GitLab but not in the import file'
   def import(input_file)
+    require_project!
+
     configure_client
 
     unless File.exist?(input_file)
@@ -106,7 +112,7 @@ class GitLabVariableEditor < Thor
         update_vars.each { |v| puts "  - #{v['key']}" }
 
         print "\nDo you want to continue? (yes/no): "
-        response = STDIN.gets.chomp.downcase
+        response = (STDIN.gets || '').chomp.downcase
 
         unless ['yes', 'y'].include?(response)
           puts "Import cancelled."
@@ -119,7 +125,7 @@ class GitLabVariableEditor < Thor
         delete_vars.each { |v| puts "  - #{v.key}" }
 
         print "\nDo you want to continue? (yes/no): "
-        response = STDIN.gets.chomp.downcase
+        response = (STDIN.gets || '').chomp.downcase
 
         unless ['yes', 'y'].include?(response)
           puts "Import cancelled."
@@ -198,7 +204,179 @@ class GitLabVariableEditor < Thor
     end
   end
 
+  desc 'batch-update KEY [VALUE]', 'Update one CI/CD variable across all projects visible to the token (VALUE is read from stdin when omitted or empty)'
+  option :type, type: :string, default: 'env_var', enum: %w[env_var file], desc: 'Variable kind'
+  option :scope, type: :string, default: '*', aliases: '-s', desc: 'Environment scope to target. When "*", variables with the same key and type in OTHER scopes are DELETED'
+  option :'set-missing', type: :boolean, default: false, aliases: '-m', desc: 'Create the variable in projects where it is missing instead of skipping them'
+  option :force, type: :boolean, default: false, aliases: '-f', desc: 'Skip confirmation prompts'
+  def batch_update(key, value = nil)
+    configure_client
+
+    if key.to_s.strip.empty?
+      puts 'Error: Variable key must not be empty'
+      exit 1
+    end
+
+    var_type = options[:type]
+    scope = options[:scope]
+
+    @stdin_consumed = false
+    if value.nil? || value.strip.empty?
+      puts 'Reading variable value from stdin...'
+      value = $stdin.read
+      value = value.sub(/\r?\n\z/, '') # drop one trailing newline added by echo/pipes
+      @stdin_consumed = true
+    end
+
+    puts "\nSettings:"
+    puts "  Key:   #{key}"
+    puts "  Type:  #{var_type}"
+    puts "  Scope: #{scope}#{' (default)' if scope == '*'}"
+
+    begin
+      puts 'Fetching projects from GitLab instance...'
+      projects = @client.projects(per_page: 100).auto_paginate
+
+      puts "Scanning #{projects.count} project(s) for variable '#{key}' (#{var_type})..."
+
+      plan = []
+      projects.each do |project|
+        begin
+          vars = @client.variables(project.id)
+        rescue Gitlab::Error::Error, SocketError, SystemCallError => e
+          puts "\n  ! Skipping #{project.path_with_namespace}: cannot read variables (#{e.message})"
+          next
+        end
+
+        same_key = vars.select { |v| v.key == key && v.variable_type == var_type }
+        target = same_key.find { |v| v.environment_scope == scope }
+        others = same_key.reject { |v| v.environment_scope == scope }
+
+        will_write = !target.nil? || options[:'set-missing']
+        delete_scopes = (scope == '*' && will_write) ? others.map(&:environment_scope) : []
+
+        plan << {
+          id: project.id,
+          path: project.path_with_namespace,
+          action: will_write ? :write : :skip,
+          had_existing: !target.nil?,
+          delete_scopes: delete_scopes
+        }
+        print '.'
+      end
+    rescue Gitlab::Error::Error, SocketError, SystemCallError => e
+      puts "\nError: #{e.message}"
+      exit 1
+    end
+    puts ''
+
+    to_write = plan.select { |p| p[:action] == :write }
+    skipped_count = plan.count { |p| p[:action] == :skip }
+    to_delete_total = plan.sum { |p| p[:delete_scopes].count }
+
+    puts "\nSummary:"
+    puts "  Projects scanned: #{projects.count}"
+    puts "  Projects to update/create: #{to_write.count}"
+    puts "  Projects skipped (variable missing): #{skipped_count}"
+    puts "  Other-scope variables to DELETE: #{to_delete_total}"
+
+    if to_delete_total.positive?
+      puts "\nWARNING: Environment scope \"*\" was requested."
+      puts 'The following variables with the same key and type in other scopes will be PERMANENTLY DELETED:'
+      plan.each do |p|
+        p[:delete_scopes].each { |s| puts "  - #{p[:path]}: #{key} (scope: #{s})" }
+      end
+    end
+
+    if to_write.empty? && to_delete_total.zero?
+      puts "\nNothing to do."
+      return
+    end
+
+    unless confirm_batch_update?
+      puts 'Batch update cancelled.'
+      exit 0
+    end
+
+    puts "\nApplying changes..."
+    updated_count = 0
+    created_count = 0
+    deleted_count = 0
+    failed_count = 0
+
+    plan.each do |p|
+      next if p[:action] == :skip
+
+      begin
+        if p[:had_existing]
+          @client.update_variable(p[:id], key, value, filter: { environment_scope: scope })
+          puts "  ✓ Updated: #{p[:path]} (scope: #{scope})"
+          updated_count += 1
+        else
+          @client.create_variable(p[:id], key, value, variable_type: var_type, environment_scope: scope)
+          puts "  ✓ Created: #{p[:path]} (scope: #{scope})"
+          created_count += 1
+        end
+
+        p[:delete_scopes].each do |s|
+          begin
+            @client.remove_variable(p[:id], key, filter: { environment_scope: s })
+            puts "  ✓ Deleted: #{p[:path]} (scope: #{s})"
+            deleted_count += 1
+          rescue Gitlab::Error::Error => e
+            puts "  ✗ Failed to delete: #{p[:path]} (scope: #{s}) - #{e.message}"
+            failed_count += 1
+          end
+        end
+      rescue Gitlab::Error::Error => e
+        puts "  ✗ Failed: #{p[:path]} - #{e.message}"
+        failed_count += 1
+      end
+    end
+
+    puts "\nBatch update completed:"
+    puts "  Updated: #{updated_count}"
+    puts "  Created: #{created_count}"
+    puts "  Deleted: #{deleted_count}"
+    puts "  Skipped: #{skipped_count}"
+    puts "  Failed: #{failed_count}"
+  end
+
   private
+
+  def require_project!
+    return unless options[:project].to_s.strip.empty?
+
+    puts 'Error: Missing required option: --project (-p)'
+    exit 1
+  end
+
+  def confirm_batch_update?
+    return true if options[:force]
+
+    print "\nDo you want to continue? (yes/no): "
+    io =
+      if @stdin_consumed
+        open_tty
+      else
+        $stdin
+      end
+
+    if io.nil?
+      puts "\nError: Cannot prompt for confirmation: stdin was used for the variable value and no terminal is available. Re-run with --force."
+      exit 1
+    end
+
+    response = (io.gets || '').chomp.downcase
+    io.close unless io.equal?($stdin)
+    %w[yes y].include?(response)
+  end
+
+  def open_tty
+    File.open('/dev/tty', 'r')
+  rescue SystemCallError, IOError
+    nil
+  end
 
   def configure_client
     @client = Gitlab.client(
