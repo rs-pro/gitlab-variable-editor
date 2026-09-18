@@ -20,7 +20,7 @@ class GitLabVariableEditor < Thor
     puts "Fetching CI/CD variables from project: #{options[:project]}"
 
     begin
-      variables = @client.variables(options[:project])
+      variables = @client.variables(options[:project]).auto_paginate
 
       if variables.empty?
         puts "No variables found for project #{options[:project]}"
@@ -78,7 +78,7 @@ class GitLabVariableEditor < Thor
 
       # Fetch existing variables
       puts "Fetching existing variables from project: #{options[:project]}"
-      existing_variables = @client.variables(options[:project])
+      existing_variables = @client.variables(options[:project]).auto_paginate
       existing_keys = existing_variables.map(&:key)
 
       # Separate new and existing variables
@@ -242,7 +242,7 @@ class GitLabVariableEditor < Thor
       plan = []
       projects.each do |project|
         begin
-          vars = @client.variables(project.id)
+          vars = @client.variables(project.id).auto_paginate
         rescue Gitlab::Error::Error, SocketError, SystemCallError => e
           puts "\n  ! Skipping #{project.path_with_namespace}: cannot read variables (#{e.message})"
           next
