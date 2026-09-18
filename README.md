@@ -4,8 +4,8 @@ A command-line toolkit for managing GitLab projects: export/import CI/CD variabl
 
 ## Features
 
-- **Variable Export**: Download all CI/CD variables from a GitLab project to a YAML file
-- **Variable Import**: Upload CI/CD variables from a YAML file to a GitLab project
+- **Variable Export**: Download all CI/CD variables from a GitLab project or group to a YAML file
+- **Variable Import**: Upload CI/CD variables from a YAML file to a GitLab project or group
 - **Batch Update**: Set/update one variable across all projects visible to the token (e.g., rotate an SSH key)
 - **Artifact Removal**: Delete job artifacts by age (e.g., older than 3 days)
 - **Safety**: Prompts for confirmation before destructive operations
@@ -39,6 +39,15 @@ Export all CI/CD variables from a project to a YAML file:
   -p my-group/my-project
 ```
 
+Export all CI/CD variables from a **group**:
+
+```bash
+./gitlab_variable_editor export group-vars.yml \
+  -e https://gitlab.example.com/api/v4 \
+  -t glpat-xxxxxxxxxxxxxxxxxxxx \
+  -g my-group
+```
+
 ### Import Variables
 
 Import CI/CD variables from a YAML file to a project:
@@ -65,6 +74,14 @@ Import CI/CD variables from a YAML file to a project:
   -t glpat-xxxxxxxxxxxxxxxxxxxx \
   -p my-group/my-project \
   --force
+```
+
+Import CI/CD variables to a **group**:
+```bash
+./gitlab_variable_editor import group-vars.yml \
+  -e https://gitlab.example.com/api/v4 \
+  -t glpat-xxxxxxxxxxxxxxxxxxxx \
+  -g my-group
 ```
 
 ### Batch Update a Variable Across All Projects
@@ -138,7 +155,8 @@ Remove job artifacts older than a specified duration:
 
 - `-e, --endpoint` - GitLab API endpoint (e.g., `https://gitlab.example.com/api/v4`)
 - `-t, --token` - GitLab personal access token
-- `-p, --project` - Project ID or path (e.g., `my-group/my-project` or `42`)
+- `-p, --project` - Project ID or path (e.g., `my-group/my-project` or `42`). Required for `export`/`import` unless `--group` is given
+- `-g, --group` - Group ID or path (e.g., `my-group` or `49`). Alternative to `--project` for `export`/`import` (group-level CI/CD variables); mutually exclusive with `--project`
 
 ### Import-Specific Options
 

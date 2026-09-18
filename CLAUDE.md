@@ -17,9 +17,10 @@ This is a Ruby CLI toolkit for managing GitLab projects. It includes tools for e
 
 **Core flow (Variable Editor)**:
 1. `GitLabVariableEditor` class inherits from `Thor`
-2. Global options (`--endpoint`, `--token`, `--project`) are defined as class options; `--project` is required only for `export`/`import` (`require_project!`)
+2. Global options (`--endpoint`, `--token`, `--project`, `--group`) are defined as class options; `export`/`import` require exactly one of `--project (-p)` or `--group (-g)` (`require_target!`); `batch-update` always targets all projects
 3. Three commands: `export`, `import`, and `batch-update`
 4. Private method `configure_client` initializes the Gitlab client with user credentials
+5. Target abstraction helpers: `target_type`/`target_id`/`target_label`, `fetch_variables` (project: `variables().auto_paginate`, group: `group_variables().auto_paginate`), `create_variable!`, `update_variable!`, `remove_variable!` dispatching to `create_variable`/`update_variable`/`remove_variable` or `create_group_variable`/`update_group_variable`/`remove_group_variable` gem methods
 
 **Core flow (batch-update)**:
 1. `batch_update(key, value = nil)` - when VALUE is omitted/empty, reads it from stdin (whole stream, one trailing newline stripped); confirmation then prompts on `/dev/tty` via `confirm_batch_update?`

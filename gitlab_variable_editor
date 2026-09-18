@@ -9,21 +9,22 @@ $stdout.sync = true
 class GitLabVariableEditor < Thor
   class_option :endpoint, type: :string, required: true, aliases: '-e', desc: 'GitLab API endpoint (e.g., https://gitlab.example.com/api/v4)'
   class_option :token, type: :string, required: true, aliases: '-t', desc: 'GitLab access token'
-  class_option :project, type: :string, aliases: '-p', desc: 'Project ID or path (required for export/import, e.g., my-group/my-project)'
+  class_option :project, type: :string, aliases: '-p', desc: 'Project ID or path for export/import (e.g., my-group/my-project); mutually exclusive with --group'
+  class_option :group, type: :string, aliases: '-g', desc: 'Group ID or path for export/import (e.g., my-group); mutually exclusive with --project'
 
-  desc 'export OUTPUT_FILE', 'Export all CI/CD variables from a GitLab project to a YAML file'
+  desc 'export OUTPUT_FILE', 'Export all CI/CD variables from a GitLab project or group to a YAML file'
   def export(output_file)
-    require_project!
+    require_target!
 
     configure_client
 
-    puts "Fetching CI/CD variables from project: #{options[:project]}"
+    puts "Fetching CI/CD variables from #{target_label}"
 
     begin
-      variables = @client.variables(options[:project]).auto_paginate
+      variables = fetch_variables
 
       if variables.empty?
-        puts "No variables found for project #{options[:project]}"
+        puts "No variables found for #{target_label}"
         return
       end
 
@@ -53,11 +54,11 @@ class GitLabVariableEditor < Thor
     end
   end
 
-  desc 'import INPUT_FILE', 'Import CI/CD variables from a YAML file to a GitLab project'
+  desc 'import INPUT_FILE', 'Import CI/CD variables from a YAML file to a GitLab project or group'
   option :force, type: :boolean, default: false, aliases: '-f', desc: 'Skip confirmation prompts'
   option :'delete-other', type: :boolean, default: false, desc: 'Delete variables that exist in GitLab but not in the import file'
   def import(input_file)
-    require_project!
+    require_target!
 
     configure_client
 
@@ -77,8 +78,8 @@ class GitLabVariableEditor < Thor
       end
 
       # Fetch existing variables
-      puts "Fetching existing variables from project: #{options[:project]}"
-      existing_variables = @client.variables(options[:project]).auto_paginate
+      puts "Fetching existing variables from #{target_label}"
+      existing_variables = fetch_variables
       existing_keys = existing_variables.map(&:key)
 
       # Separate new and existing variables
@@ -158,12 +159,12 @@ class GitLabVariableEditor < Thor
 
           if existing_keys.include?(var['key'])
             # Update existing variable
-            @client.update_variable(options[:project], var['key'], var['value'], **var_options)
+            update_variable!(var['key'], var['value'], **var_options)
             puts "  ✓ Updated: #{var['key']}"
             updated_count += 1
           else
             # Create new variable
-            @client.create_variable(options[:project], var['key'], var['value'], **var_options)
+            create_variable!(var['key'], var['value'], **var_options)
             puts "  ✓ Created: #{var['key']}"
             created_count += 1
           end
@@ -180,7 +181,7 @@ class GitLabVariableEditor < Thor
         puts "\nDeleting variables..."
         delete_vars.each do |var|
           begin
-            @client.delete_variable(options[:project], var.key)
+            remove_variable!(var.key)
             puts "  ✓ Deleted: #{var.key}"
             deleted_count += 1
           rescue Gitlab::Error::Error => e
@@ -344,11 +345,58 @@ class GitLabVariableEditor < Thor
 
   private
 
-  def require_project!
-    return unless options[:project].to_s.strip.empty?
+  def require_target!
+    project = options[:project].to_s.strip
+    group = options[:group].to_s.strip
 
-    puts 'Error: Missing required option: --project (-p)'
-    exit 1
+    unless project.empty? ^ group.empty?
+      puts 'Error: Specify exactly one of --project (-p) or --group (-g) for export/import'
+      exit 1
+    end
+  end
+
+  def target_type
+    options[:group].to_s.strip.empty? ? :project : :group
+  end
+
+  def target_id
+    target_type == :group ? options[:group] : options[:project]
+  end
+
+  def target_label
+    "#{target_type}: #{target_id}"
+  end
+
+  def fetch_variables
+    if target_type == :group
+      @client.group_variables(target_id).auto_paginate
+    else
+      @client.variables(target_id).auto_paginate
+    end
+  end
+
+  def create_variable!(key, value, **opts)
+    if target_type == :group
+      @client.create_group_variable(target_id, key, value, **opts)
+    else
+      @client.create_variable(target_id, key, value, **opts)
+    end
+  end
+
+  def update_variable!(key, value, **opts)
+    if target_type == :group
+      @client.update_group_variable(target_id, key, value, **opts)
+    else
+      @client.update_variable(target_id, key, value, **opts)
+    end
+  end
+
+  def remove_variable!(key)
+    if target_type == :group
+      @client.remove_group_variable(target_id, key)
+    else
+      @client.remove_variable(target_id, key)
+    end
   end
 
   def confirm_batch_update?

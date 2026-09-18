@@ -21,14 +21,26 @@ RSpec.describe GitLabVariableEditor do
 
   def create_mock_client(variables)
     client = Object.new
-    client.define_singleton_method(:variables) { |*_args| variables }
+    client.define_singleton_method(:variables) { |*_args| paginated_array(variables) }
     client.define_singleton_method(:update_variable) { |*_args| }
     client.define_singleton_method(:create_variable) { |*_args| }
-    client.define_singleton_method(:delete_variable) do |_project, key|
+    client.define_singleton_method(:remove_variable) do |*_args|
       @deleted ||= []
-      @deleted << key
+      @deleted << _args[1]
     end
     client.instance_variable_set(:@deleted, [])
+    client
+  end
+
+  def create_group_mock_client(variables)
+    client = Object.new
+    client.define_singleton_method(:group_variables) { |*_args| paginated_array(variables) }
+    %i[create_group_variable update_group_variable remove_group_variable].each do |name|
+      client.define_singleton_method(name) do |*args|
+        instance_variable_set("@#{name}", []) unless instance_variable_get("@#{name}")
+        instance_variable_get("@#{name}") << args
+      end
+    end
     client
   end
 
@@ -200,6 +212,101 @@ RSpec.describe GitLabVariableEditor do
       end
     end
   end
+  describe 'import command with --group' do
+    let(:group_opts) do
+      {
+        force: true,
+        endpoint: 'https://example.com',
+        token: 'x',
+        project: nil,
+        group: 'krasichka'
+      }
+    end
+
+    it 'fetches, creates and updates via the group variable API methods' do
+      mock_client = create_group_mock_client([OpenStruct.new(key: 'TO_KEEP', value: 'keep')])
+      allow(Gitlab).to receive(:client).and_return(mock_client)
+
+      write_yaml_file([
+        { 'key' => 'TO_KEEP', 'value' => 'updated' },
+        { 'key' => 'NEW_GROUP_VAR', 'value' => 'v' }
+      ])
+
+      editor = create_editor_for_test(group_opts)
+      capture_stdout { editor.import(temp_yaml_file.path) }
+
+      expect(mock_client.instance_variable_get(:@create_group_variable)).to contain_exactly(
+        ['krasichka', 'NEW_GROUP_VAR', 'v', anything]
+      )
+      expect(mock_client.instance_variable_get(:@update_group_variable)).to contain_exactly(
+        ['krasichka', 'TO_KEEP', 'updated', anything]
+      )
+      expect(mock_client.instance_variable_get(:@remove_group_variable)).to be_nil
+    end
+
+    it 'deletes other variables via the group API with --delete-other' do
+      opts = group_opts.merge('delete-other': true)
+      mock_client = create_group_mock_client([
+        OpenStruct.new(key: 'TO_KEEP', value: 'keep'),
+        OpenStruct.new(key: 'TO_DELETE', value: 'x')
+      ])
+      allow(Gitlab).to receive(:client).and_return(mock_client)
+
+      write_yaml_file([{ 'key' => 'TO_KEEP', 'value' => 'keep' }])
+
+      editor = create_editor_for_test(opts)
+      capture_stdout { editor.import(temp_yaml_file.path) }
+
+      expect(mock_client.instance_variable_get(:@remove_group_variable)).to contain_exactly(
+        ['krasichka', 'TO_DELETE']
+      )
+    end
+  end
+
+  describe 'target validation' do
+    def run_import_with(opts)
+      mock_client = create_mock_client([])
+      allow(Gitlab).to receive(:client).and_return(mock_client)
+      write_yaml_file([{ 'key' => 'K', 'value' => 'v' }])
+
+      editor = create_editor_for_test(opts)
+      output = capture_stdout do
+        begin
+          editor.import(temp_yaml_file.path)
+        rescue SystemExit
+          # expected: command exits on invalid target options
+        end
+      end
+      output
+    end
+
+    it 'exits when both --project and --group are given' do
+      opts = {
+        force: true,
+        endpoint: 'https://example.com',
+        token: 'x',
+        project: 'p',
+        group: 'g'
+      }
+
+      output = run_import_with(opts)
+      expect(output).to include('exactly one')
+    end
+
+    it 'exits when neither --project nor --group is given' do
+      opts = {
+        force: true,
+        endpoint: 'https://example.com',
+        token: 'x',
+        project: nil,
+        group: nil
+      }
+
+      output = run_import_with(opts)
+      expect(output).to include('exactly one')
+    end
+  end
+
   describe 'batch_update command' do
     def create_project(id, path)
       OpenStruct.new(id: id, path_with_namespace: path)
@@ -217,7 +324,7 @@ RSpec.describe GitLabVariableEditor do
 
       client = Object.new
       client.define_singleton_method(:projects) { |*_args| paginated }
-      client.define_singleton_method(:variables) { |project_id| vars_by_project.fetch(project_id, []) }
+      client.define_singleton_method(:variables) { |project_id| paginated_array(vars_by_project.fetch(project_id, [])) }
 
       %i[update_variable create_variable remove_variable].each do |name|
         client.define_singleton_method(name) do |*args|
@@ -446,6 +553,11 @@ RSpec.describe GitLabVariableEditor do
       end
     end
   end
+end
+
+def paginated_array(array)
+  array.define_singleton_method(:auto_paginate) { |&block| block ? each(&block) : array }
+  array
 end
 
 def capture_stdout
